@@ -138,7 +138,7 @@ class Video_dataset(data.Dataset):
         for i in range(self.test_clips):
             offsets += [(idx * t_stride + start_list[i]) % len(video_list) for idx in range(self.num_segments)]
 
-        half_length = offsets
+        full_length += offsets
 
         #1/4
         sample_range = len(video_list) // 4
@@ -149,7 +149,7 @@ class Video_dataset(data.Dataset):
         for i in range(self.test_clips):
             offsets += [(idx * t_stride + start_list[i]) % len(video_list) for idx in range(self.num_segments)]
 
-        quater_length = offsets
+        full_length += offsets
 
         #1/8
         sample_range = len(video_list) // 8
@@ -160,9 +160,10 @@ class Video_dataset(data.Dataset):
         for i in range(self.test_clips):
             offsets += [(idx * t_stride + start_list[i]) % len(video_list) for idx in range(self.num_segments)]
 
-        eighth_length = offsets
+        full_length += offsets
 
-        return np.array(full_length + half_length + quater_length + eighth_length) + self.index_bias
+
+        return np.array(full_length) + self.index_bias
         
         
     # def _get_test_indices(self, video_list):
@@ -209,6 +210,10 @@ class Video_dataset(data.Dataset):
                 record = copy.deepcopy(self.video_list[index])
                 directory = os.path.join(self.root_path, record.path)
                 directory += '.avi'
+                if not os.path.exists(directory):
+                    directory = os.path.join(os.path.dirname(self.root_path), 'train', record.path)
+                if not os.path.exists(directory):
+                    directory = os.path.join(os.path.dirname(self.root_path), 'val', record.path)
                 video_list = self._decord_decode(directory)
                 # video_list = self._decord_pyav(directory)
                 if video_list is None:
