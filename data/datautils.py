@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+import pdb
 
 from data.hoi_dataset import BongardDataset
 try:
@@ -27,12 +28,13 @@ ID_to_DIRNAME={
     'dtd': 'DTD',
     'pets': 'OxfordPets',
     'cars': 'StanfordCars',
-    'ucf101': 'UCF101',
     'caltech101': 'Caltech101',
     'food101': 'Food101',
     'sun397': 'SUN397',
     'aircraft': 'fgvc_aircraft',
-    'eurosat': 'eurosat'
+    'eurosat': 'eurosat',
+    'kinetics400': 'kinetics400',
+    'ucf101': 'ucf101'
 }
 
 def build_dataset(set_id, transform, data_root, mode='test', n_shot=None, split="all", bongard_anno=False):
@@ -97,6 +99,7 @@ class AugMixAugmenter(object):
         self.severity = severity
         
     def __call__(self, x):
+        #preprocess just convert it to tensor, base_transformare the base_transforms
         image = self.preprocess(self.base_transform(x))
         views = [augmix(x, self.preprocess, self.aug_list, self.severity) for _ in range(self.n_views)]
         return [image] + views

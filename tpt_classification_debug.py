@@ -32,7 +32,7 @@ import torchvision.models as models
 from clip.custom_clip import get_coop
 from clip.cocoop import get_cocoop
 from data.imagnet_prompts import imagenet_classes
-from data.datautils import AugMixAugmenter, build_dataset
+from data.datautils import AugMixAugmenter
 from data.video import Video_dataset
 from utils.tools import Summary, AverageMeter, ProgressMeter, accuracy, load_model_weight, set_random_seed, init_distributed_mode
 from data.transforms import GroupScale, GroupCenterCrop, Stack, ToTorchFormatTensor, GroupNormalize, GroupOverSample, GroupFullResSample
@@ -68,10 +68,10 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
     selected_idx = None
 
 
-    for name, param in model.named_parameters():
-        #only require parameter for the prompt
-        if "prompt_learner" in name:
-            param.requires_grad_(True)
+    # for name, param in model.named_parameters():
+    #     #only require parameter for the prompt
+    #     if "prompt_learner" in name:
+    #         param.requires_grad_(True)
 
     for j in range(args.tta_steps):
         with torch.cuda.amp.autocast():
@@ -84,7 +84,7 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
             # if selected_idx is not None:
             #     output = output[selected_idx]
             # else:
-            #     output, selected_idx = select_confident_samples(output, args.selection_p)
+            output, selected_idx = select_confident_samples(output, args.selection_p)
             #     #output torch.Size([6, 102]), selection_p = 0.1, select 10% from 64 samples
 
             #calibrate
@@ -145,27 +145,38 @@ def main_worker(gpu, args):
             GroupScale(scale_size),
             GroupCenterCrop(input_size),
         ])
-    elif args.test_crops == 3:  # do not flip, so only 3 crops (left right center)
+    elif args.test_crops == 3:  # left right center
         cropping = torchvision.transforms.Compose([
             GroupFullResSample(
                 crop_size=input_size,
                 scale_size=scale_size,
                 flip=False)
         ])
-    elif args.test_crops == 5:  # do not flip, so only 5 crops
+    elif args.test_crops == 5:  # upper left/right, lower left/right, center
         cropping = torchvision.transforms.Compose([
             GroupOverSample(
                 crop_size=input_size,
                 scale_size=scale_size,
                 flip=False)
         ])
+    elif args.test_crops == 9:  # extend upper/lower center, center left/right
+        cropping = torchvision.transforms.Compose([
+            GroupOverSample(
+                crop_size=input_size,
+                scale_size=scale_size,
+                flip=False,
+                more_fix_crop=True)
+        ])
+    else:
+        raise ValueError("Only 1, 3, 5, 10 crops are supported while we got {}".format(args.test_crops))
 
     logging.info("Use GPU: {} for training".format(args.gpu))
 
+    
     # create model (zero-shot clip model (ViT-L/14@px336) with promptruning)
     with open(config.data.label_list) as f: classnames = [x.strip().split(',')[1] for x in f.readlines()[1:]]
     if args.cocoop:
-        model = get_cocoop(args.arch, args.test_sets, 'cpu', args.n_ctx)
+        model = get_cocoop(args.arch, config.data.datasets, 'cpu', args.n_ctx)
         assert args.load is not None
         load_model_weight(args.load, model, 'cpu', args) # to load to cuda: device="cuda:{}".format(args.gpu)
         model_state = deepcopy(model.state_dict())
@@ -174,8 +185,8 @@ def main_worker(gpu, args):
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])
         # model.state_dict()["prompt_learner.ctx"].shape = [3, 512]
-        # neutral_model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init, neutral_classnames)
-        model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
+        # neutral_model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, neutral_classnames)
+        model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
 
         filtered_state_dict = {}
         ignore_key = 'prompt_learner'
@@ -230,10 +241,9 @@ def main_worker(gpu, args):
 
     
     # iterating through eval datasets
-    datasets = args.test_sets.split("/")
     results = {}
 
-    set_id = 'kinetics400'
+    set_id = config.data.dataset
     # for set_id in datasets:
     #     if args.tpt:
     #         base_transform = transforms.Compose([
@@ -312,7 +322,6 @@ def main_worker(gpu, args):
     val_loader = DataLoader(val_data,
         batch_size=config.data.batch_size, num_workers=config.data.workers,
         sampler=val_sampler, pin_memory=True, drop_last=False)
-    
     results[set_id] = test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state, scaler, args, config)
 
     # del val_dataset, val_loader
@@ -358,7 +367,11 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         images = images.view((-1, 3) + images.size()[-2:]) #3, 8, 3, 224, 224 #bxc, frame, c, h, w
         # vt, c, h, w = images.size() #viewxtime, c,h,w
         image_input = images.cuda(args.gpu, non_blocking=True)
-        image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
+        if args.test_crops != 1: #if != 1 use middle crop, if = 1 use the only crop (middle)
+            image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
+        else:
+            image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[0][0]
+
         target = target.cuda(args.gpu, non_blocking=True)
         # if isinstance(images, list):
         #     for k in range(len(images)):
@@ -473,7 +486,6 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test-time Prompt Tuning')
     parser.add_argument('data', metavar='DIR', help='path to dataset root')
-    parser.add_argument('--test_sets', type=str, default='A/R/V/K/I', help='test dataset (multiple datasets split by slash)')
     parser.add_argument('--dataset_mode', type=str, default='test', help='which split to use: train/val/test')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='RN50')
     parser.add_argument('--resolution', default=224, type=int, help='CLIP image resolution')

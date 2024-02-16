@@ -11,6 +11,7 @@ from .simple_tokenizer import SimpleTokenizer as _Tokenizer
 from data.imagnet_prompts import imagenet_classes
 from data.fewshot_datasets import fewshot_datasets
 from data.cls_to_names import *
+import pdb
 
 _tokenizer = _Tokenizer()
 
@@ -134,7 +135,8 @@ class PromptLearner(nn.Module):
         if self.learned_cls:
             self.register_buffer("token_suffix", embedding[:, 1 + n_ctx + 1:, :])  # ..., EOS
         else:
-            self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :])  # CLS, EOS
+            self.register_buffer("token_suffix", embedding[:, 1 + n_ctx :, :])  # CLS, EOS learned_cls = false for tpt
+            # self.register_buffer("token_suffix", embedding[:, 1:, :])
 
         self.ctx_init = ctx_init
         self.tokenized_prompts = tokenized_prompts  # torch.Tensor
@@ -307,38 +309,48 @@ class ClipTestTimeTuning(nn.Module):
 
         return torch.mean(text_features, dim=0)
 
-    def inference(self, image):
+    def inference(self, image, num_segments):
         with torch.no_grad():
-            image_features = self.image_encoder(image.type(self.dtype))
+            image_features = self.image_encoder(image.type(self.dtype)) #vitb-16: 24, 512 = 3 8 512。 3 8  3 224 224 
+            #torch.Size([384, 3, 224, 224])
 
-        text_features = self.get_text_features()
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        
+        text_features = self.get_text_features() #400 512
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True) #384, 512 normalized
+
         logit_scale = self.logit_scale.exp()
-        logits = logit_scale * image_features @ text_features.t()
+        logits = logit_scale * image_features @ text_features.t() #24, 400      3 8 400
+        
+        #aggregate along temporal dimension
+        logits = logits.view(-1, num_segments, logits.size()[-1]) #3, 8, 400
+        image_features = image_features.view(-1, num_segments, image_features.size()[-1]) #3, 8, 512
+        logits = torch.einsum('abc,abd->acd', [logits, image_features]) #3 8 400, 3 8 512 -> 3 400 512
 
+        logits = torch.einsum('abd,bd->ab', [logits, text_features]) #3 400 512, 400 512
         return logits
 
-    def forward(self, input):
+    def forward(self, input, num_segments):
         if isinstance(input, Tuple):
             view_0, view_1, view_2 = input
             return self.contrast_prompt_tuning(view_0, view_1, view_2)
         elif len(input.size()) == 2:
             return self.directional_prompt_tuning(input)
         else:
-            return self.inference(input)
+            return self.inference(input, num_segments)
 
 
-def get_coop(clip_arch, test_set, device, n_ctx, ctx_init, learned_cls=False):
-    if test_set in fewshot_datasets:
-        classnames = eval("{}_classes".format(test_set.lower()))
-    elif test_set == 'bongard':
-        if learned_cls:
-            classnames = ['X', 'X']
-        else:
-            classnames = ['True', 'False']
-    else:
-        classnames = imagenet_classes
+def get_coop(clip_arch, test_set, device, n_ctx, ctx_init, classnames, learned_cls=False):
+    # if test_set in fewshot_datasets:
+    #     pass
+    #     # classnames = eval("{}_classes".format(test_set.lower()))
+    # elif test_set == 'bongard':
+    #     if learned_cls:
+    #         classnames = ['X', 'X']
+    #     else:
+    #         classnames = ['True', 'False']
+    # else:
+    #     classnames = imagenet_classes
 
     model = ClipTestTimeTuning(device, classnames, None, arch=clip_arch,
                             n_ctx=n_ctx, ctx_init=ctx_init, learned_cls=learned_cls)

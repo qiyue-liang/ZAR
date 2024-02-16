@@ -6,10 +6,10 @@ import numpy as np
 
 import shutil
 from enum import Enum
+import pdb
 
 import torch
 import torchvision.transforms as transforms
-
 
 def set_random_seed(seed):
     random.seed(seed)
@@ -22,6 +22,32 @@ class Summary(Enum):
     AVERAGE = 1
     SUM = 2
     COUNT = 3
+
+def init_distributed_mode(args):
+    """ init for distribute mode """
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        args.rank = int(os.environ["RANK"])
+        args.world_size = int(os.environ['WORLD_SIZE'])
+        args.gpu = int(os.environ['LOCAL_RANK'])
+    elif 'SLURM_PROCID' in os.environ:
+        args.rank = int(os.environ['SLURM_PROCID'])
+        args.gpu = args.rank % torch.cuda.device_count()
+    else:
+        print('Not using distributed mode')
+        args.distributed = False
+        return
+
+    args.distributed = True
+
+    torch.cuda.set_device(args.gpu)
+    args.dist_backend = 'nccl'
+    '''
+    This is commented due to the stupid icoding pylint checking.
+    print('distributed init rank {}: {}'.format(args.rank, args.dist_url), flush=True)
+    '''
+    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
+                                         world_size=args.world_size, rank=args.rank)
+    torch.distributed.barrier()
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -61,6 +87,7 @@ class AverageMeter(object):
             raise ValueError('invalid summary type %r' % self.summary_type)
         
         return fmtstr.format(**self.__dict__)
+
 
 
 class ProgressMeter(object):
@@ -119,7 +146,7 @@ def load_model_weight(load_path, model, device, args):
             best_acc1 = checkpoint['best_acc1']
         except:
             best_acc1 = torch.tensor(0)
-        if device is not 'cpu':
+        if device != 'cpu':
             # best_acc1 may be from a checkpoint from a different GPU
             best_acc1 = best_acc1.to(device)
         try:

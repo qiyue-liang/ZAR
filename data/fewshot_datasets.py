@@ -48,7 +48,7 @@ class BaseJsonDataset(Dataset):
         return image, torch.tensor(label).long()
 
 fewshot_datasets = ['DTD', 'Flower102', 'Food101', 'Cars', 'SUN397', 
-                    'Aircraft', 'Pets', 'Caltech101', 'UCF101', 'eurosat']
+                    'Aircraft', 'Pets', 'Caltech101', 'ucf101', 'eurosat', 'kinetics400']
 
 path_dict = {
     # dataset_name: ["image_dir", "json_split_file"]
@@ -58,9 +58,10 @@ path_dict = {
     "pets": ["", "data/data_splits/split_zhou_OxfordPets.json"],
     "sun397": ["", "data/data_splits/split_zhou_SUN397.json"],
     "caltech101": ["", "data/data_splits/split_zhou_Caltech101.json"],
-    "ucf101": ["", "data/data_splits/split_zhou_UCF101.json"],
+    "ucf101": ["", "data/data_splits/split_ucf101.json"],
     "cars": ["", "data/data_splits/split_zhou_StanfordCars.json"],
-    "eurosat": ["", "data/data_splits/split_zhou_EuroSAT.json"]
+    "eurosat": ["", "data/data_splits/split_zhou_EuroSAT.json"],
+    "kinetics400": ["", "data/data_splits/split_kinetics400.json"]
 }
 
 def build_fewshot_dataset(set_id, root, transform, mode='train', n_shot=None):
