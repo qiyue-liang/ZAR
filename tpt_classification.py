@@ -32,7 +32,7 @@ import torchvision.models as models
 from clip.custom_clip import get_coop
 from clip.cocoop import get_cocoop
 from data.imagnet_prompts import imagenet_classes
-from data.datautils import AugMixAugmenter, build_dataset
+from data.datautils import AugMixAugmenter
 from data.video import Video_dataset
 from utils.tools import Summary, AverageMeter, ProgressMeter, accuracy, load_model_weight, set_random_seed, init_distributed_mode
 from data.transforms import GroupScale, GroupCenterCrop, Stack, ToTorchFormatTensor, GroupNormalize, GroupOverSample, GroupFullResSample
@@ -68,10 +68,10 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
     selected_idx = None
 
 
-    for name, param in model.named_parameters():
-        #only require parameter for the prompt
-        if "prompt_learner" in name:
-            param.requires_grad_(True)
+    # for name, param in model.named_parameters():
+    #     #only require parameter for the prompt
+    #     if "prompt_learner" in name:
+    #         param.requires_grad_(True)
 
     for j in range(args.tta_steps):
         with torch.cuda.amp.autocast():
@@ -84,7 +84,7 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
             # if selected_idx is not None:
             #     output = output[selected_idx]
             # else:
-            #     output, selected_idx = select_confident_samples(output, args.selection_p)
+            output, selected_idx = select_confident_samples(output, args.selection_p)
             #     #output torch.Size([6, 102]), selection_p = 0.1, select 10% from 64 samples
 
             #calibrate
@@ -152,20 +152,30 @@ def main_worker(gpu, args):
                 scale_size=scale_size,
                 flip=False)
         ])
-    elif args.test_crops == 5:  # do not flip, so only 5 crops
+    elif args.test_crops == 5:  # upper left/right, lower left/right, center
         cropping = torchvision.transforms.Compose([
             GroupOverSample(
                 crop_size=input_size,
                 scale_size=scale_size,
                 flip=False)
         ])
+    elif args.test_crops == 9:  # extend upper/lower center, center left/right
+        cropping = torchvision.transforms.Compose([
+            GroupOverSample(
+                crop_size=input_size,
+                scale_size=scale_size,
+                flip=False,
+                more_fix_crop=True)
+        ])
+    else:
+        raise ValueError("Only 1, 3, 5, 10 crops are supported while we got {}".format(args.test_crops))
 
     logging.info("Use GPU: {} for training".format(args.gpu))
 
     # create model (zero-shot clip model (ViT-L/14@px336) with promptruning)
     with open(config.data.label_list) as f: classnames = [x.strip().split(',')[1] for x in f.readlines()[1:]]
     if args.cocoop:
-        model = get_cocoop(args.arch, args.test_sets, 'cpu', args.n_ctx)
+        model = get_cocoop(args.arch, config.data.datasets, 'cpu', args.n_ctx)
         assert args.load is not None
         load_model_weight(args.load, model, 'cpu', args) # to load to cuda: device="cuda:{}".format(args.gpu)
         model_state = deepcopy(model.state_dict())
@@ -174,8 +184,8 @@ def main_worker(gpu, args):
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])
         # model.state_dict()["prompt_learner.ctx"].shape = [3, 512]
-        # neutral_model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init, neutral_classnames)
-        model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
+        # neutral_model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, neutral_classnames)
+        model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
 
         filtered_state_dict = {}
         ignore_key = 'prompt_learner'
@@ -224,63 +234,9 @@ def main_worker(gpu, args):
 
     cudnn.benchmark = True
 
-    # norm stats from clip.load()
-    # normalize = transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
-    #                                  std=[0.26862954, 0.26130258, 0.27577711])
-
-    
-    # iterating through eval datasets
-    datasets = args.test_sets.split("/")
     results = {}
 
-    set_id = 'kinetics400'
-    # for set_id in datasets:
-    #     if args.tpt:
-    #         base_transform = transforms.Compose([
-    #             transforms.Resize(args.resolution, interpolation=BICUBIC),
-    #             transforms.CenterCrop(args.resolution)])
-    #         preprocess = transforms.Compose([
-    #             transforms.ToTensor(),
-    #             normalize])
-    #         data_transform = AugMixAugmenter(base_transform, preprocess, n_views=args.batch_size-1, 
-    #                                         augmix=len(set_id)>1)
-    #         batchsize = 1
-    #     else:
-    #         data_transform = transforms.Compose([
-    #             transforms.Resize(args.resolution, interpolation=BICUBIC),
-    #             transforms.CenterCrop(args.resolution),
-    #             transforms.ToTensor(),
-    #             normalize,
-    #         ])
-    #         batchsize = args.batch_size
-
-    #     logging.info("evaluating: {}".format(set_id))
-    #     # reset the model
-    #     # Reset classnames of custom CLIP model
-    #     if len(set_id) > 1: 
-    #         # fine-grained classification datasets
-    #         classnames = eval("{}_classes".format(set_id.lower()))
-    #     else:
-    #         assert set_id in ['A', 'R', 'K', 'V', 'I']
-    #         classnames_all = imagenet_classes
-    #         classnames = []
-    #         if set_id in ['A', 'R', 'V']:
-    #             label_mask = eval("imagenet_{}_mask".format(set_id.lower()))
-    #             if set_id == 'R':
-    #                 for i, m in enumerate(label_mask):
-    #                     if m:
-    #                         classnames.append(classnames_all[i])
-    #             else:
-    #                 classnames = [classnames_all[i] for i in label_mask]
-    #         else:
-    #             classnames = classnames_all
-    #     if args.cocoop:
-    #         model.prompt_generator.reset_classnames(classnames, args.arch)
-    #         model = model.cpu()
-    #         model_state = model.state_dict()
-    #         model = model.cuda(args.gpu)
-    #     else:
-    #         model.reset_classnames(classnames, args.arch)
+    set_id = config.data.dataset
 
     val_data = Video_dataset(
     config.data.val_root, config.data.val_list, config.data.label_list,
@@ -312,7 +268,6 @@ def main_worker(gpu, args):
     val_loader = DataLoader(val_data,
         batch_size=config.data.batch_size, num_workers=config.data.workers,
         sampler=val_sampler, pin_memory=True, drop_last=False)
-    
     results[set_id] = test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state, scaler, args, config)
 
     # del val_dataset, val_loader
@@ -358,24 +313,12 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         images = images.view((-1, 3) + images.size()[-2:]) #3, 8, 3, 224, 224 #bxc, frame, c, h, w
         # vt, c, h, w = images.size() #viewxtime, c,h,w
         image_input = images.cuda(args.gpu, non_blocking=True)
-        image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
-        target = target.cuda(args.gpu, non_blocking=True)
-        # if isinstance(images, list):
-        #     for k in range(len(images)):
-        #         images[k] = images[k].cuda(args.gpu, non_blocking=True)
-        #     image = images[0]
-        # else:
-        #     if len(images.size()) > 4:
-        #         # when using ImageNet Sampler as the dataset
-        #         assert images.size()[0] == 1
-        #         images = images.squeeze(0)
-        #     images = images.cuda(args.gpu, non_blocking=True)
-        #     image = images
-        # target = target.cuda(args.gpu, non_blocking=True)
-        # if args.tpt:
-        #     images = torch.cat(images, dim=0)
+        if args.test_crops != 1: #if != 1 use middle crop, if = 1 use the only crop (middle)
+            image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
+        else:
+            image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[0][0]
 
-        # reset the tunable prompt to its initial state
+        target = target.cuda(args.gpu, non_blocking=True)
 
         
         if not args.cocoop: # no need to reset cocoop because it's fixed
@@ -396,40 +339,6 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
             if args.cocoop:
                 image_feature = image_feature[0].unsqueeze(0)
         
-        #calibration
-        # for name, param in model.named_parameters():
-        #     if 'bias' in name:
-        #         param.requires_grad = True  # Set bias parameters to trainable
-        #     else:
-        #         param.requires_grad = False  # Set weight parameters to not trainable
-
-        # # Create a list of trainable parameters (bias parameters)
-        # trainable_param = [param for param in model.parameters() if param.requires_grad]
-
-        # Define the optimizer with trainable parameters (bias parameters)
-        # calibration_optimizer = torch.optim.AdamW(trainable_param, 1e-4)
-        # model.train()
-        # random_noise = np.random.rand(*tuple(image.size()))
-        # random_noise = torch.from_numpy(random_noise).cuda(args.gpu)
-        # with torch.cuda.amp.autocast():
-        #     p_cf = model(random_noise, config.data.num_segments)
-        # p_cf_normalized = p_cf / p_cf.sum(dim=1, keepdim=True)
-        # p_cf_equal = torch.ones(p_cf.shape)
-        # p_cf_equal = p_cf_equal / p_cf_equal.sum(dim=1, keepdim=True)
-        # p_cf_equal = p_cf_equal.cuda(args.gpu)
-        # # epsilon = 1e-8
-        # # p_cf_normalized += epsilon
-        # # output_normalized += epsilon
-        # kl_loss = torch.sum(p_cf_normalized * torch.log(p_cf_normalized / p_cf_equal), dim=1).mean()
-        # calibration_optimizer.zero_grad()
-        # # compute gradient and do SGD step
-        # scaler.scale(kl_loss).backward()
-        
-        # # Unscales the gradients of optimizer's assigned params in-place
-        # scaler.step(calibration_optimizer)
-        # scaler.update()
-
-        # print(model.state_dict()['text_encoder.ln_final.bias'])
 
         model.eval()
         with torch.no_grad():
@@ -438,21 +347,10 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
                     output = model((image_feature, pgen_ctx))
                 else:
                     output = model(image, config.data.num_segments)
-                    # p_cf = neutral_model(image, config.data.num_segments)
 
-        
-        #calibrate (diagonal_W)
-        # W = np.linalg.inv(np.identity(config.data.num_classes) * p_cf.detach().cpu().numpy())
-        # b = np.zeros([config.data.num_classes, 1])
-        # label_probs = output[0].detach().cpu().numpy()
-        # label_probs = label_probs / np.sum(label_probs) #normalize to 1
-        # calibrate_label_probs = np.matmul(W, np.expand_dims(label_probs, axis=-1)) + b
-        # calibrate_label_probs = torch.from_numpy(calibrate_label_probs).cuda(args.gpu).reshape(1, -1)
-        # cal1, cal5 = accuracy(calibrate_label_probs, target, topk=(1, 5))
-        # measure accuracy and record loss
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
-        # print(cal1, cal5, acc1, acc5)   
+
         top1.update(acc1[0], image.size(0))
         top5.update(acc5[0], image.size(0))
         if i%10 == 0:
@@ -473,7 +371,6 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Test-time Prompt Tuning')
     parser.add_argument('data', metavar='DIR', help='path to dataset root')
-    parser.add_argument('--test_sets', type=str, default='A/R/V/K/I', help='test dataset (multiple datasets split by slash)')
     parser.add_argument('--dataset_mode', type=str, default='test', help='which split to use: train/val/test')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='RN50')
     parser.add_argument('--resolution', default=224, type=int, help='CLIP image resolution')
