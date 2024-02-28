@@ -3,17 +3,17 @@ pretrain:
 seed: 0
 data:
     dataset: hmdb51
-    modality: RGB
+    modality: video #RGB #video
     num_segments: 16
     seg_length: 1
     batch_size: 1
     workers: 2
     num_classes: 51
     image_tmpl: 'img_{:05d}.jpg'
-    train_root: '/media/ssd8T/HMDB51/images'
-    train_list: '/media/ssd8T/HMDB51/annotations/train_rgb_split_1.txt' #'lists/k400/kinetics_rgb_train_se320.txt' 
-    val_root: /media/ssd8T/HMDB51/images
-    val_list: /media/ssd8T/HMDB51/annotations/val_rgb_split_1.txt #'/media/ssd8T/CLIP_TSM/lists/k400/1_10_val_videofolder.txt' #'/media/ssd8T/CLIP_TSM6/lists/k400/val_videofolder.txt' #lists/k400/kinetics_rgb_val_se320.txt
+    train_root: '/media/ssd8T/HMDB51/videos'
+    train_list: '/media/ssd8T/HMDB51/annotations/train_rgb_split_2.txt' #'lists/k400/kinetics_rgb_train_se320.txt' 
+    val_root: /media/ssd8T/HMDB51/videos
+    val_list: /media/ssd8T/TPT-video/lists/hmdb51/novel_val.txt #'/media/ssd8T/CLIP_TSM/lists/k400/1_10_val_videofolder.txt' #'/media/ssd8T/CLIP_TSM6/lists/k400/val_videofolder.txt' #lists/k400/kinetics_rgb_val_se320.txt
     label_list: '/media/ssd8T/HMDB51/annotations/hmdb51_labels.csv' #'/media/ssd8T/TPT-video/calibration/neutral_labels_ucf101.csv' #'/media/ssd8T/UCF101/annotations/ucf_labels.csv'
     input_size: 224
     random_shift: True

@@ -11,8 +11,8 @@ data:
     num_classes: 160
     image_tmpl: 'img_{:05d}.jpg'
     val_root: /media/ssd8T/kinetics600/k600/test
-    val_list:  /media/ssd8T/BIKE/lists/k600/test_split1_exist.txt #'/media/ssd8T/CLIP_TSM/lists/k400/1_10_val_videofolder.txt' #'/media/ssd8T/CLIP_TSM6/lists/k400/val_videofolder.txt' #lists/k400/kinetics_rgb_val_se320.txt
-    label_list: '/media/ssd8T/BIKE/lists/k600/k160_labels_split1.csv' #'/media/ssd8T/TPT-video/calibration/neutral_labels_ucf101.csv' #'/media/ssd8T/UCF101/annotations/ucf_labels.csv'
+    val_list:  /media/ssd8T/BIKE/lists/k600/test_split2_exist.txt #'/media/ssd8T/CLIP_TSM/lists/k400/1_10_val_videofolder.txt' #'/media/ssd8T/CLIP_TSM6/lists/k400/val_videofolder.txt' #lists/k400/kinetics_rgb_val_se320.txt
+    label_list: '/media/ssd8T/BIKE/lists/k600/k160_labels_split2.csv' #'/media/ssd8T/TPT-video/calibration/neutral_labels_ucf101.csv' #'/media/ssd8T/UCF101/annotations/ucf_labels.csv'
     input_size: 224
     random_shift: True
     output_path: exps
