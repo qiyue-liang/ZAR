@@ -353,7 +353,7 @@ def get_coop(clip_arch, test_set, device, n_ctx, ctx_init, classnames, learned_c
     #     classnames = imagenet_classes
 
     model = ClipTestTimeTuning(device, classnames, None, arch=clip_arch,
-                            n_ctx=n_ctx, ctx_init=ctx_init, learned_cls=learned_cls)
+                            n_ctx=n_ctx, ctx_init=ctx_init, ctx_position='end', learned_cls=learned_cls)
 
     return model
 

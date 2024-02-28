@@ -6,7 +6,7 @@ arch=ViT-B/16
 bs=16
 ctx_init=None
 seed_list=(0)
-selection_p_list=(1)
+selection_p_list=(0.8)
 # seed_list=(0)
 test_crop=3
 # seed_list=(1024)
@@ -18,7 +18,7 @@ for seed in "${seed_list[@]}"; do
         -a ${arch} -b ${bs} --gpu 0 \
         --tpt --ctx_init ${ctx_init} \
         --test_crops ${test_crop} --test_clips 4 --config '/media/ssd8T/TPT-video/configs/ucf101/ucf101_vitb-16-f16.yaml' --seed ${seed} \
-        --logging /media/ssd8T/TPT-video/logging/ucf101_vit-b-16-f16-seed${seed}-selection_p${selection_p}-test_crop${test_crop}.log
+        --logging /media/ssd8T/TPT-video/logging/UCF101/ucf101_vit-b-16-f16-seed${seed}-selection_p${selection_p}-test_crop${test_crop}.log
     done
 done
 # '/media/ssd8T/TPT-video/configs/k400/k400_train_rgb_vitb-16-f8.yaml'

@@ -22,6 +22,31 @@ import torchvision
 from dotmap import DotMap
 import logging
 
+from trainers import vificlip
+from utils.config import get_config
+# config = '/media/ssd8T/ViFi-CLIP/configs/zero_shot/train/k400/16_16_vifi_clip.yaml'
+config = '/media/ssd8T/ViFi-CLIP/configs/few_shot/prompting_few_shot/hmdb51/16_32_prompting_16_shot.yaml'
+test_logging = '/media/ssd8T/TPT-video/logging/hmdb51/vificlip'
+pretrained_model_path = '/media/ssd8T/vifi_clip_10_epochs_k400_full_finetuned.pth'
+class parse_option():
+    def __init__(self):
+        self.config = config
+        self.output =  test_logging   # Name of output folder to store logs and save weights
+        self.resume = pretrained_model_path
+        # No need to change below args.
+        self.only_test = True
+        self.opts = None
+        self.batch_size = None
+        self.pretrained = None
+        self.accumulation_steps = None
+        self.local_rank = 0
+args = parse_option()
+vificonfig = get_config(args)
+from utils.logger import create_logger
+logger = create_logger(output_dir=test_logging, name=f"{vificonfig.MODEL.ARCH}")
+logger.info(f"working dir: {vificonfig.OUTPUT}")
+
+
 try:
     from torchvision.transforms import InterpolationMode
     BICUBIC = InterpolationMode.BICUBIC
@@ -38,7 +63,7 @@ from utils.tools import Summary, AverageMeter, ProgressMeter, accuracy, load_mod
 from data.transforms import GroupScale, GroupCenterCrop, Stack, ToTorchFormatTensor, GroupNormalize, GroupOverSample, GroupFullResSample
 from data.cls_to_names import *
 from data.fewshot_datasets import fewshot_datasets
-from data.imagenet_variants import thousand_k_to_200, imagenet_a_mask, imagenet_r_mask, imagenet_v_mask
+# from data.imagenet_variants import thousand_k_to_200, imagenet_a_mask, imagenet_r_mask, imagenet_v_mask
 
 
 model_names = sorted(name for name in models.__dict__
@@ -78,7 +103,9 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
             if args.cocoop:
                 output = model((image_feature, pgen_ctx))
             else:
-                output = model(inputs, config.data.num_segments)  #inputs torch.Size([24, 3, 224, 224]), outputs torch.Size([24, 400])
+                #b, t, c, h, w
+                # 768 = 3*16*16 temporal
+                output = model(inputs)  #inputs torch.Size([24, 3, 224, 224]), outputs torch.Size([24, 400])
                 
                 #torch.Size([48, 400]) , 3 view x 16 temporal variation 
             # if selected_idx is not None:
@@ -145,7 +172,7 @@ def main_worker(gpu, args):
             GroupScale(scale_size),
             GroupCenterCrop(input_size),
         ])
-    elif args.test_crops == 3:  # do not flip, so only 3 crops (left right center)
+    elif args.test_crops == 3:  # left right center
         cropping = torchvision.transforms.Compose([
             GroupFullResSample(
                 crop_size=input_size,
@@ -172,6 +199,7 @@ def main_worker(gpu, args):
 
     logging.info("Use GPU: {} for training".format(args.gpu))
 
+    
     # create model (zero-shot clip model (ViT-L/14@px336) with promptruning)
     with open(config.data.label_list) as f: classnames = [x.strip().split(',')[1] for x in f.readlines()[1:]]
     if args.cocoop:
@@ -180,41 +208,51 @@ def main_worker(gpu, args):
         load_model_weight(args.load, model, 'cpu', args) # to load to cuda: device="cuda:{}".format(args.gpu)
         model_state = deepcopy(model.state_dict())
     else:
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/vifi_clip_10_epochs_k400_full_finetuned.pth')
+        # checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/coop/model.pth.tar-50')
+        # checkpoint = torch.load('/media/ssd8T/vifi_clip_10_epochs_k400_full_finetuned.pth')
+        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/k2_few_shot_hmdb51_vl_prompting.pth')
         
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
-        # ctx_path = '/media/ssd8T/TPT-video/checkpoint/vificlip/k16_few_shot_hmdb51_vl_prompting.pth'
-        # ctxcheckpoint['model']['module.prompt_learner.ctx'].shape = torch.Size([10, 512])
+       
+        model = vificlip.returnCLIP(vificonfig, logger=logger, class_names=classnames)
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])
         # model.state_dict()["prompt_learner.ctx"].shape = [3, 512]
-        model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
-        # model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, None, classnames)
-
-        filtered_state_dict = {}
-        ignore_key = 'prompt_learner'
-
-        for name, param in new_state_dict.items():
-            if ignore_key not in name:
-                filtered_state_dict[name] = param
-        model.load_state_dict(filtered_state_dict, strict = False)
-        # if args.load is not None: #false for tpt will not go inside here
-        # logging.info("Use pre-trained soft vifiCLIP as initialization")
-        # pretrained_ctx = torch.load(ctx_path)['model']['module.prompt_learner.ctx']
-        # assert pretrained_ctx.size()[0] == args.n_ctx
-        # with torch.no_grad():
-        #     model.prompt_learner.ctx = torch.nn.Parameter(pretrained_ctx)
-        #     model.prompt_learner.ctx_init_state = torch.nn.Parameter(pretrained_ctx)
-                # model.prompt_learner[0].ctx.copy_(pretrained_ctx)
-                # model.prompt_learner[0].ctx_init_state = pretrained_ctx
+        # neutral_model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, neutral_classnames)
+        # model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, classnames)
+        # model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, classnames,learned_cls=True)
+        # model = get_coop(args.arch, config.data.datasets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
+        # pretrained_ctx = torch.load(args.load)['state_dict']['ctx']
+        
+        # filtered_state_dict = {}
+        # ignore_key = 'prompt_learner'
+        # for name, param in new_state_dict.items():
+        #     if ignore_key not in name:
+        #         filtered_state_dict[name] = param
+        # model.load_state_dict(filtered_state_dict, strict = False)
+        model.load_state_dict(new_state_dict, strict = True)
+        if args.load is not None: #false for tpt will not go inside here
+            logging.info("Use pre-trained soft prompt (CoOp) as initialization")
+            pretrained_ctx = torch.load(args.load)['state_dict']['ctx']
+            assert pretrained_ctx.size()[0] == args.n_ctx
+            with torch.no_grad():
+                model.prompt_learner[0].ctx.copy_(pretrained_ctx)
+                model.prompt_learner[0].ctx_init_state = pretrained_ctx
         model_state = None
+
+    # for name, param in model.prompt_learner.named_parameters():
+    #     #only require parameter for the prompt
+    #     if "prompt_learner" not in name:
+    #             param.requires_grad_(False)
 
     for name, param in model.named_parameters():
         #only require parameter for the prompt
-        if not args.cocoop:
-            if "prompt_learner" not in name:
+        if "prompt_learner" not in name:
                 param.requires_grad_(False)
-        elif "text_encoder" not in name:
-                param.requires_grad_(False)
+        # if not args.cocoop:
+        #     if "prompt_learner" not in name:
+        #         param.requires_grad_(False)
+        # elif "text_encoder" not in name:
+        #         param.requires_grad_(False)
     
     logging.info("=> Model created: visual backbone {}".format(args.arch))
     
@@ -225,14 +263,16 @@ def main_worker(gpu, args):
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
 
+
     # define optimizer
-    if args.cocoop:
-        optimizer = None
-        optim_state = None
-    else:
-        trainable_param = model.prompt_learner.parameters()
-        optimizer = torch.optim.AdamW(trainable_param, args.lr)
-        optim_state = deepcopy(optimizer.state_dict())
+    # if args.cocoop:
+    #     optimizer = None
+    #     optim_state = None
+    # else:
+    trainable_param = list(model.prompt_learner.parameters())
+    trainable_param = model.prompt_learner.parameters()
+    optimizer = torch.optim.AdamW(trainable_param, args.lr)
+    optim_state = deepcopy(optimizer.state_dict())
     # setup automatic mixed-precision (Amp) loss scaling
     scaler = torch.cuda.amp.GradScaler(init_scale=1000)
 
@@ -369,9 +409,11 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         
         n_seg = config.data.num_segments #8 #1, 1152, 224, 224. 3x16x8 3 224 224
        
-        images = images.view((-1, 3) + images.size()[-2:]) #3, 8, 3, 224, 224 #bxc, frame, c, h, w
+        images = images.view((-1, config.data.num_segments, 3) + images.size()[-2:]) #48 16 3 224 224
+        # images = images.view((-1, 3) + images.size()[-2:]) #3, 8, 3, 224, 224 #bxc, frame, c, h, w
         # vt, c, h, w = images.size() #viewxtime, c,h,w
         image_input = images.cuda(args.gpu, non_blocking=True)
+
         if args.test_crops != 1: #if != 1 use middle crop, if = 1 use the only crop (middle)
             image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
         else:
@@ -411,8 +453,8 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
 
         # The actual inference goes here
         if args.tpt:
-            if args.cocoop:
-                image_feature = image_feature[0].unsqueeze(0)
+            # if args.cocoop:
+            image = image.unsqueeze(0)
         
         #calibration
         # for name, param in model.named_parameters():
@@ -455,7 +497,7 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
                 if args.cocoop:
                     output = model((image_feature, pgen_ctx))
                 else:
-                    output = model(image, config.data.num_segments)
+                    output = model(image)
                     # p_cf = neutral_model(image, config.data.num_segments)
 
         

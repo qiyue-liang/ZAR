@@ -180,10 +180,10 @@ def main_worker(gpu, args):
         load_model_weight(args.load, model, 'cpu', args) # to load to cuda: device="cuda:{}".format(args.gpu)
         model_state = deepcopy(model.state_dict())
     else:
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/vifi_clip_10_epochs_k400_full_finetuned.pth')
-        
+        checkpoint = torch.load('/media/ssd8T/vifi_clip_10_epochs_k400_full_finetuned.pth')
+        ctx_path = '/media/ssd8T/TPT-video/checkpoint/vificlip/k16_few_shot_hmdb51_vl_prompting.pth'
+        ctxcheckpoint = torch.load(ctx_path)
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
-        # ctx_path = '/media/ssd8T/TPT-video/checkpoint/vificlip/k16_few_shot_hmdb51_vl_prompting.pth'
         # ctxcheckpoint['model']['module.prompt_learner.ctx'].shape = torch.Size([10, 512])
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])
         # model.state_dict()["prompt_learner.ctx"].shape = [3, 512]
@@ -196,11 +196,14 @@ def main_worker(gpu, args):
         for name, param in new_state_dict.items():
             if ignore_key not in name:
                 filtered_state_dict[name] = param
+        # filtered_state_dict['prompt_learner.token_prefix'] = ctxcheckpoint['model']['module.prompt_learner.token_prefix']
+        # filtered_state_dict['prompt_learner.token_suffix'] = ctxcheckpoint['model']['module.prompt_learner.token_suffix']
+        # filtered_state_dict['prompt_learner.ctx'] = ctxcheckpoint['model']['module.prompt_learner.ctx']
         model.load_state_dict(filtered_state_dict, strict = False)
         # if args.load is not None: #false for tpt will not go inside here
-        # logging.info("Use pre-trained soft vifiCLIP as initialization")
-        # pretrained_ctx = torch.load(ctx_path)['model']['module.prompt_learner.ctx']
-        # assert pretrained_ctx.size()[0] == args.n_ctx
+        logging.info("Use pre-trained soft prompt (CoOp) as initialization")
+        pretrained_ctx = torch.load(ctx_path)['model']['module.prompt_learner.ctx']
+        assert pretrained_ctx.size()[0] == args.n_ctx
         # with torch.no_grad():
         #     model.prompt_learner.ctx = torch.nn.Parameter(pretrained_ctx)
         #     model.prompt_learner.ctx_init_state = torch.nn.Parameter(pretrained_ctx)
@@ -506,7 +509,7 @@ if __name__ == '__main__':
     parser.add_argument('--tpt', action='store_true', default=False, help='run test-time prompt tuning')
     parser.add_argument('--selection_p', default=0.1, type=float, help='confidence selection percentile')
     parser.add_argument('--tta_steps', default=1, type=int, help='test-time-adapt steps')
-    parser.add_argument('--n_ctx', default=4, type=int, help='number of tunable tokens')
+    parser.add_argument('--n_ctx', default=10, type=int, help='number of tunable tokens')
     parser.add_argument('--ctx_init', default=None, type=str, help='init tunable prompts')
     parser.add_argument('--cocoop', action='store_true', default=False, help="use cocoop's output as prompt initialization")
     parser.add_argument('--load', default=None, type=str, help='path to a pre-trained coop/cocoop')

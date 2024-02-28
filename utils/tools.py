@@ -133,6 +133,7 @@ def load_model_weight(load_path, model, device, args):
     if os.path.isfile(load_path):
         print("=> loading checkpoint '{}'".format(load_path))
         checkpoint = torch.load(load_path, map_location=device)
+        pdb.set_trace()
         state_dict = checkpoint['state_dict']
         # Ignore fixed token vectors
         if "token_prefix" in state_dict:
