@@ -115,6 +115,10 @@ def main_worker(gpu, args):
         model_state = deepcopy(model.state_dict())
     else:
         model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init) #load this model for tpt
+        from fvcore.nn import FlopCountAnalysis
+        pdb.set_trace()
+        flops = FlopCountAnalysis(model, input)
+        flops.total()
         if args.load is not None: #false for tpt will not go inside here
             print("Use pre-trained soft prompt (CoOp) as initialization")
             pretrained_ctx = torch.load(args.load)['state_dict']['ctx']

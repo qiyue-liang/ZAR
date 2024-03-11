@@ -35,7 +35,7 @@ class Video_dataset(data.Dataset):
                  image_tmpl='img_{:05d}.jpg', transform=None,
                  random_shift=True, test_mode=False,
                  index_bias=1, dense_sample=False, test_clips=3,
-                 num_sample=1):
+                 num_sample=1, inference_mode=False):
 
         self.root_path = root_path
         self.list_file = list_file
@@ -53,6 +53,7 @@ class Video_dataset(data.Dataset):
         self.dense_sample = dense_sample  # using dense sample as I3D
         self.test_clips = test_clips
         self.num_sample = num_sample
+        self.inference_mode = inference_mode
         if self.dense_sample:
             print('=> Using dense sample for the dataset...')
         if self.num_sample > 1:
@@ -117,7 +118,20 @@ class Video_dataset(data.Dataset):
         #multi clip multi sampling rate
 
         #full length
+        if self.inference_mode:
+            num_clips = 1
+            tick = len(video_list) / float(self.num_segments)
+            start_list = np.linspace(0, tick - 1, num=num_clips, dtype=int)
+            offsets = []
+            for start_idx in start_list.tolist():
+                offsets += [
+                    int(start_idx + tick * x) % len(video_list)
+                    for x in range(self.num_segments)
+                ]
+            return np.array(offsets) + self.index_bias
+
         num_clips = self.test_clips
+        # num_clips = 6
         tick = len(video_list) / float(self.num_segments)
         start_list = np.linspace(0, tick - 1, num=num_clips, dtype=int)
         offsets = []
@@ -133,7 +147,7 @@ class Video_dataset(data.Dataset):
         sample_range = len(video_list) // 2
         sample_pos = max(1, 1 + len(video_list) - sample_range)
         t_stride = self.sample_range // self.num_segments
-        start_list = np.array([np.random.randint(0, sample_pos - 1) for _ in range(self.test_clips)])
+        start_list = np.array([np.random.randint(0, sample_pos - 1) for _ in range(num_clips)])
         offsets = []
         for i in range(self.test_clips):
             offsets += [(idx * t_stride + start_list[i]) % len(video_list) for idx in range(self.num_segments)]
@@ -162,7 +176,33 @@ class Video_dataset(data.Dataset):
 
         eighth_length = offsets
 
+        # return np.array(full_length + half_length ) + self.index_bias
         return np.array(full_length + half_length + quater_length + eighth_length) + self.index_bias
+        
+    # def _get_test_indices(self, video_list):
+    #     if self.dense_sample:
+    #         # multi-clip for dense sampling
+    #         num_clips = self.test_clips
+    #         sample_pos = max(0, len(video_list) - self.sample_range)
+    #         interval = self.sample_range // self.num_segments
+    #         start_list = [clip_idx * math.floor(sample_pos / (num_clips -1)) for clip_idx in range(num_clips)]
+    #         base_offsets = np.arange(self.num_segments) * interval
+    #         offsets = []
+    #         for start_idx in start_list:
+    #             offsets.extend((base_offsets + start_idx) % len(video_list))
+    #         return np.array(offsets) + self.index_bias
+    #     else:
+    #         # multi-clip for uniform sampling
+    #         num_clips = self.test_clips
+    #         tick = len(video_list) / float(self.num_segments)
+    #         start_list = np.linspace(0, tick - 1, num=num_clips, dtype=int)
+    #         offsets = []
+    #         for start_idx in start_list.tolist():
+    #             offsets += [
+    #                 int(start_idx + tick * x) % len(video_list)
+    #                 for x in range(self.num_segments)
+    #             ]
+    #         return np.array(offsets) + self.index_bias
 
 
     def _decord_decode(self, video_path):

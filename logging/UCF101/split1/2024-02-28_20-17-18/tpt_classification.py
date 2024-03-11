@@ -79,7 +79,7 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
                 output = model((image_feature, pgen_ctx))
             else:
                 output = model(inputs, config.data.num_segments)  #inputs torch.Size([24, 3, 224, 224]), outputs torch.Size([24, 400])
-            output, selected_idx = select_confident_samples(output, args.selection_p)
+                
                 #torch.Size([48, 400]) , 3 view x 16 temporal variation 
             # if selected_idx is not None:
             #     output = output[selected_idx]
@@ -170,16 +170,12 @@ def main_worker(gpu, args):
         load_model_weight(args.load, model, 'cpu', args) # to load to cuda: device="cuda:{}".format(args.gpu)
         model_state = deepcopy(model.state_dict())
     else:
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/ucf101_seed3_vifi_clip_base2novel.pth')
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/hmdb51_seed3_vifi_clip_base2novel.pth')
-        # checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/vifi_clip_10_epochs_k400_full_finetuned.pth')
+        checkpoint = torch.load('/media/ssd8T/vifi_clip_10_epochs_k400_full_finetuned.pth')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])
         # model.state_dict()["prompt_learner.ctx"].shape = [3, 512]
         # neutral_model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init, neutral_classnames)
-        
         model = get_coop(args.arch, args.test_sets, args.gpu, args.n_ctx, args.ctx_init, classnames) #load this model for tpt
-
 
         filtered_state_dict = {}
         ignore_key = 'prompt_learner'
@@ -442,16 +438,6 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
                     output = model((image_feature, pgen_ctx))
                 else:
                     output = model(image, config.data.num_segments)
-
-                    #flops
-                    # from fvcore.nn import FlopCountAnalysis
-                    # pdb.set_trace()
-                    # flops = FlopCountAnalysis(model, (image, config.data.num_segments))
-                    # flops.total()
-                    # 563970499572.0
-                    # (Pdb) flops.by_operator()
-                    # Counter({'linear': 561285955584, 'conv': 1849688064, 'layer_norm': 800381440, 'matmul': 33595392, 'einsum': 879092.0})
-
                     # p_cf = neutral_model(image, config.data.num_segments)
 
         

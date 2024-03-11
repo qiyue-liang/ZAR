@@ -171,7 +171,6 @@ def main_worker(gpu, args):
         model_state = deepcopy(model.state_dict())
     else:
         checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/ucf101_seed3_vifi_clip_base2novel.pth')
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/hmdb51_seed3_vifi_clip_base2novel.pth')
         # checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/vifi_clip_10_epochs_k400_full_finetuned.pth')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])

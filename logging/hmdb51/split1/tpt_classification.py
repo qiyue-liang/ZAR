@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from PIL import Image
 import numpy as np
+from einops import rearrange
 
 import torch
 import torch.nn.parallel
@@ -51,12 +52,36 @@ def select_confident_samples(logits, top):
     idx = torch.argsort(batch_entropy, descending=False)[:int(batch_entropy.size()[0] * top)]
     return logits[idx], idx
 
+
 def avg_entropy(outputs):
     logits = outputs - outputs.logsumexp(dim=-1, keepdim=True) # logits = outputs.log_softmax(dim=1) [N, 1000]
     avg_logits = logits.logsumexp(dim=0) - np.log(logits.shape[0]) # avg_logits = logits.mean(0) [1, 1000]
     min_real = torch.finfo(avg_logits.dtype).min
     avg_logits = torch.clamp(avg_logits, min=min_real)
     return -(avg_logits * torch.exp(avg_logits)).sum(dim=-1)
+
+def transform_image_for_cpr_patch(x, patch_len):
+    batch_size, channels, height, width = x.size()
+
+    # Resize the images in the batch to sizes divisible by patch_len
+    resize_t = transforms.Resize(((height // patch_len) * patch_len, (width // patch_len) * patch_len))
+    resize_o = transforms.Resize((height, width))
+    x_prime = torch.stack([resize_t(x[i]) for i in range(batch_size)])
+
+    # Rearrange each image in the batch into patches
+    x_prime = rearrange(x_prime, 'b c (ps1 h) (ps2 w) -> b (ps1 ps2) c h w', ps1=patch_len, ps2=patch_len)
+
+    # Shuffle the patches for each image in the batch
+    perm_idx = torch.argsort(torch.rand(batch_size, x_prime.shape[1]), dim=-1)
+    x_prime = torch.stack([x_prime[i][perm_idx[i]] for i in range(batch_size)])
+
+    # Reshape the shuffled patches back to the original shape for each image
+    x_prime = rearrange(x_prime, 'b (ps1 ps2) c h w -> b c (ps1 h) (ps2 w)', ps1=patch_len, ps2=patch_len)
+
+    # Resize the images in the batch back to their original sizes
+    x_prime = torch.stack([resize_o(x_prime[i]) for i in range(batch_size)])
+
+    return x_prime
 
 
 def test_time_tuning(model, inputs, optimizer, scaler, args, config):
@@ -75,21 +100,27 @@ def test_time_tuning(model, inputs, optimizer, scaler, args, config):
 
     for j in range(args.tta_steps):
         with torch.cuda.amp.autocast():
-            if args.cocoop:
-                output = model((image_feature, pgen_ctx))
-            else:
-                output = model(inputs, config.data.num_segments)  #inputs torch.Size([24, 3, 224, 224]), outputs torch.Size([24, 400])
+            #entropy selection
+            output = model(inputs, config.data.num_segments)  #inputs torch.Size([24, 3, 224, 224]), outputs torch.Size([24, 400])
             output, selected_idx = select_confident_samples(output, args.selection_p)
-                #torch.Size([48, 400]) , 3 view x 16 temporal variation 
+
+            
+            #cpr selection
+            inputs = inputs.view((-1, config.data.num_segments, 3) + inputs.size()[-2:])
+            inputs = inputs[selected_idx]
+            inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+            inputs = transform_image_for_cpr_patch(inputs, patch_len=4)
+            output_cpr = model(inputs, config.data.num_segments)
+            _, selected_idx = select_confident_samples(output_cpr, 0.5)
+                # torch.Size([48, 400]) , 3 view x 16 temporal variation 
             # if selected_idx is not None:
             #     output = output[selected_idx]
             # else:
             #     output, selected_idx = select_confident_samples(output, args.selection_p)
-            #     #output torch.Size([6, 102]), selection_p = 0.1, select 10% from 64 samples
-
-            #calibrate
+                #output torch.Size([6, 102]), selection_p = 0.1, select 10% from 64 samples
             loss = avg_entropy(output)
-
+            # loss = avg_entropy(output[selected_idx])
+        
         optimizer.zero_grad()
         # compute gradient and do SGD step
         scaler.scale(loss).backward()
@@ -140,6 +171,10 @@ def main_worker(gpu, args):
     input_std = [0.26862954, 0.26130258, 0.27577711]
     input_size = config.data.input_size
     scale_size = 256 if config.data.input_size == 224 else config.data.input_size
+    test_cropping = torchvision.transforms.Compose([
+            GroupScale(scale_size),
+            GroupCenterCrop(input_size),
+        ])
     if args.test_crops == 1: # one crop
         cropping = torchvision.transforms.Compose([
             GroupScale(scale_size),
@@ -170,7 +205,7 @@ def main_worker(gpu, args):
         load_model_weight(args.load, model, 'cpu', args) # to load to cuda: device="cuda:{}".format(args.gpu)
         model_state = deepcopy(model.state_dict())
     else:
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/ucf101_seed3_vifi_clip_base2novel.pth')
+        # checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/ucf101_seed3_vifi_clip_base2novel.pth')
         checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/hmdb51_seed3_vifi_clip_base2novel.pth')
         # checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/vifi_clip_10_epochs_k400_full_finetuned.pth')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
@@ -203,7 +238,11 @@ def main_worker(gpu, args):
                 param.requires_grad_(False)
         elif "text_encoder" not in name:
                 param.requires_grad_(False)
-    
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"Parameter name: {name}, Shape: {param.shape}")
+    pdb.set_trace()
     logging.info("=> Model created: visual backbone {}".format(args.arch))
     
     if not torch.cuda.is_available():
@@ -301,6 +340,22 @@ def main_worker(gpu, args):
     dense_sample=args.dense,
     test_clips=args.test_clips)
 
+    test_data = Video_dataset(
+    config.data.val_root, config.data.val_list, config.data.label_list,
+    random_shift=False, num_segments=config.data.test_segments,
+    modality=config.data.modality,
+    image_tmpl=config.data.image_tmpl,
+    test_mode=True,
+    transform=torchvision.transforms.Compose([
+        test_cropping,
+        Stack(roll=False),
+        ToTorchFormatTensor(div=True),
+        GroupNormalize(input_mean, input_std),
+    ]),
+    dense_sample=args.dense,
+    test_clips=args.test_clips, inference_mode=True)
+
+
     # val_dataset = build_dataset(set_id, data_transform, args.data, mode=args.dataset_mode)
     
     #(Pdb) len(val_dataset[0][0]) 64, each image val_dataset[0][0][0].shape is torch.Size([3, 224, 224])
@@ -312,14 +367,19 @@ def main_worker(gpu, args):
     #             num_workers=args.workers, pin_memory=True)
 
 
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data, seed = args.seed)
+
     val_loader = DataLoader(val_data,
         batch_size=config.data.batch_size, num_workers=config.data.workers,
         sampler=val_sampler, pin_memory=True, drop_last=False)
-    
-    results[set_id] = test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state, scaler, args, config)
 
+    test_loader = DataLoader(test_data,
+        batch_size=config.data.batch_size, num_workers=config.data.workers,
+        sampler=val_sampler, pin_memory=True, drop_last=False)
     # del val_dataset, val_loader
+
+    results[set_id] = test_time_adapt_eval(val_loader, test_loader, model, model_state, optimizer, optim_state, scaler, args, config)
+
     try:
         logging.info("=> Acc. on testset [{}]: @1 {}/ @5 {}".format(set_id, results[set_id][0], results[set_id][1]))
     except:
@@ -337,7 +397,7 @@ def main_worker(gpu, args):
     logging.info("\n")
 
 
-def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state, scaler, args, config):
+def test_time_adapt_eval(val_loader, test_loader, model, model_state, optimizer, optim_state, scaler, args, config):
     batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
     top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
     top5 = AverageMeter('Acc@5', ':6.2f', Summary.AVERAGE)
@@ -354,7 +414,11 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
             model.reset()
     end = time.time()
 
-    for i, (images, target) in enumerate(val_loader):
+    for i, (val_data, test_data) in enumerate(zip(val_loader, test_loader)):
+    # for i, (images, target) in enumerate(val_loader):
+
+        images, target = val_data
+        image, _ = test_data
         assert args.gpu is not None
         
         n_seg = config.data.num_segments #8 #1, 1152, 224, 224. 3x16x8 3 224 224
@@ -362,7 +426,9 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         images = images.view((-1, 3) + images.size()[-2:]) #3, 8, 3, 224, 224 #bxc, frame, c, h, w
         # vt, c, h, w = images.size() #viewxtime, c,h,w
         image_input = images.cuda(args.gpu, non_blocking=True)
-        image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
+        image = image.cuda(args.gpu, non_blocking=True)
+        image = image.view((1, -1, config.data.test_segments) + images.size()[-3:])[0][0]
+        # image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
         target = target.cuda(args.gpu, non_blocking=True)
         # if isinstance(images, list):
         #     for k in range(len(images)):
@@ -441,11 +507,10 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
                 if args.cocoop:
                     output = model((image_feature, pgen_ctx))
                 else:
-                    output = model(image, config.data.num_segments)
+                    output = model(image, config.data.test_segments)
 
                     #flops
                     # from fvcore.nn import FlopCountAnalysis
-                    # pdb.set_trace()
                     # flops = FlopCountAnalysis(model, (image, config.data.num_segments))
                     # flops.total()
                     # 563970499572.0
@@ -464,7 +529,6 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         # calibrate_label_probs = torch.from_numpy(calibrate_label_probs).cuda(args.gpu).reshape(1, -1)
         # cal1, cal5 = accuracy(calibrate_label_probs, target, topk=(1, 5))
         # measure accuracy and record loss
-
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         # print(cal1, cal5, acc1, acc5)   
         top1.update(acc1[0], image.size(0))

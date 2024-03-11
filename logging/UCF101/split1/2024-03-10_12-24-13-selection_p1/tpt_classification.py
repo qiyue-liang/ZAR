@@ -140,6 +140,10 @@ def main_worker(gpu, args):
     input_std = [0.26862954, 0.26130258, 0.27577711]
     input_size = config.data.input_size
     scale_size = 256 if config.data.input_size == 224 else config.data.input_size
+    test_cropping = torchvision.transforms.Compose([
+            GroupScale(scale_size),
+            GroupCenterCrop(input_size),
+        ])
     if args.test_crops == 1: # one crop
         cropping = torchvision.transforms.Compose([
             GroupScale(scale_size),
@@ -171,7 +175,6 @@ def main_worker(gpu, args):
         model_state = deepcopy(model.state_dict())
     else:
         checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/ucf101_seed3_vifi_clip_base2novel.pth')
-        checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/hmdb51_seed3_vifi_clip_base2novel.pth')
         # checkpoint = torch.load('/media/ssd8T/TPT-video/checkpoint/vificlip/vifi_clip_10_epochs_k400_full_finetuned.pth')
         new_state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
         # new_state_dict["prompt_learner.token_suffix"].shape = torch.Size([400, 76, 512])
@@ -301,6 +304,22 @@ def main_worker(gpu, args):
     dense_sample=args.dense,
     test_clips=args.test_clips)
 
+    test_data = Video_dataset(
+    config.data.val_root, config.data.val_list, config.data.label_list,
+    random_shift=False, num_segments=config.data.test_segments,
+    modality=config.data.modality,
+    image_tmpl=config.data.image_tmpl,
+    test_mode=True,
+    transform=torchvision.transforms.Compose([
+        test_cropping,
+        Stack(roll=False),
+        ToTorchFormatTensor(div=True),
+        GroupNormalize(input_mean, input_std),
+    ]),
+    dense_sample=args.dense,
+    test_clips=args.test_clips, inference_mode=True)
+
+
     # val_dataset = build_dataset(set_id, data_transform, args.data, mode=args.dataset_mode)
     
     #(Pdb) len(val_dataset[0][0]) 64, each image val_dataset[0][0][0].shape is torch.Size([3, 224, 224])
@@ -312,14 +331,19 @@ def main_worker(gpu, args):
     #             num_workers=args.workers, pin_memory=True)
 
 
-    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
+    val_sampler = torch.utils.data.distributed.DistributedSampler(val_data, seed = args.seed)
+
     val_loader = DataLoader(val_data,
         batch_size=config.data.batch_size, num_workers=config.data.workers,
         sampler=val_sampler, pin_memory=True, drop_last=False)
-    
-    results[set_id] = test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state, scaler, args, config)
 
+    test_loader = DataLoader(test_data,
+        batch_size=config.data.batch_size, num_workers=config.data.workers,
+        sampler=val_sampler, pin_memory=True, drop_last=False)
     # del val_dataset, val_loader
+
+    results[set_id] = test_time_adapt_eval(val_loader, test_loader, model, model_state, optimizer, optim_state, scaler, args, config)
+
     try:
         logging.info("=> Acc. on testset [{}]: @1 {}/ @5 {}".format(set_id, results[set_id][0], results[set_id][1]))
     except:
@@ -337,7 +361,7 @@ def main_worker(gpu, args):
     logging.info("\n")
 
 
-def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state, scaler, args, config):
+def test_time_adapt_eval(val_loader, test_loader, model, model_state, optimizer, optim_state, scaler, args, config):
     batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
     top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
     top5 = AverageMeter('Acc@5', ':6.2f', Summary.AVERAGE)
@@ -354,7 +378,11 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
             model.reset()
     end = time.time()
 
-    for i, (images, target) in enumerate(val_loader):
+    for i, (val_data, test_data) in enumerate(zip(val_loader, test_loader)):
+    # for i, (images, target) in enumerate(val_loader):
+
+        images, target = val_data
+        image, _ = test_data
         assert args.gpu is not None
         
         n_seg = config.data.num_segments #8 #1, 1152, 224, 224. 3x16x8 3 224 224
@@ -362,7 +390,9 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         images = images.view((-1, 3) + images.size()[-2:]) #3, 8, 3, 224, 224 #bxc, frame, c, h, w
         # vt, c, h, w = images.size() #viewxtime, c,h,w
         image_input = images.cuda(args.gpu, non_blocking=True)
-        image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
+        image = image.cuda(args.gpu, non_blocking=True)
+        image = image.view((1, -1, config.data.test_segments) + images.size()[-3:])[0][0]
+        # image = image_input.view((args.test_crops, -1, config.data.num_segments) + image_input.size()[-3:])[2][0] #middle crop, first full length
         target = target.cuda(args.gpu, non_blocking=True)
         # if isinstance(images, list):
         #     for k in range(len(images)):
@@ -441,11 +471,10 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
                 if args.cocoop:
                     output = model((image_feature, pgen_ctx))
                 else:
-                    output = model(image, config.data.num_segments)
+                    output = model(image, config.data.test_segments)
 
                     #flops
                     # from fvcore.nn import FlopCountAnalysis
-                    # pdb.set_trace()
                     # flops = FlopCountAnalysis(model, (image, config.data.num_segments))
                     # flops.total()
                     # 563970499572.0
@@ -464,7 +493,6 @@ def test_time_adapt_eval(val_loader, model, model_state, optimizer, optim_state,
         # calibrate_label_probs = torch.from_numpy(calibrate_label_probs).cuda(args.gpu).reshape(1, -1)
         # cal1, cal5 = accuracy(calibrate_label_probs, target, topk=(1, 5))
         # measure accuracy and record loss
-
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         # print(cal1, cal5, acc1, acc5)   
         top1.update(acc1[0], image.size(0))
